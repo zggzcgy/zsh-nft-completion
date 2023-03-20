@@ -1,465 +1,180 @@
 #compdef nft
 
-_nft(){
-local -a rules states prev args families options descriptors
-local state="start" line nextstate cmd_obj cmd_subcmd cmd_fam cmd_tab cmd_chain #curcontext="$curcontext"
+#
+# Copyright (c) 2023 Chen <zggzcgy@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-options=(
-  '(-)'{-h,--help}'[show help]' \
-  '(-)'{-v,--version}'[print version information]' \
-  "(-i --interactive)"{-i,--interactive}'[read input from interactive CLI]: :->end' \
-  "(-f --file)"{-f,--file}'[Read input from <filename>]:nftables rule file:_files' \
-  '(-c --check -n --numeric -N)'{-c,--check}'[check commands validity without actually applying the changes]' \
-  '(-j --json)'{-j,--json}'[format output in json]' \
-  '(-c --check -N)*'{-n,--numeric}'[can be specified up to 3 times, Shows 1:network addresses(default behaviour), 2:Internet services (port numbers) and 3:protocols, user IDs, and group IDs numerically]' \
-  '(-s --stateless)'{-s,--stateless}'[omit stateful information of ruleset]' \
-  '(-N -n --numeric -c --check)'-N'[translate IP addresses to names]' \
-  '(-a --handle)'{-a,--handle}'[output rule handle]' \
-  '(-e --echo)'{-e,--echo}'[echo what has been added, inserted or replaced]' \
-  {-I,--includepath}'[add <directory> to the paths searched for include files. Default is /usr/share]:include directory:_path_files -/' \
+# This is based on nftables v1.0.6
+
+local -a subcmd_number
+subcmd_number=(/$'[0-9]##\0'/ ':number:decimal number:( )')
+
+local -a subcmd_string
+subcmd_string=(/$'[^\0]##\0'/ ':string:arbitrary string:_value"')
+
+local -a subcmd_files
+subcmd_files=(/$'[^\0]##\0'/ ':file:file name:_files')
+
+local -a subcmd_ipaddr
+subcmd_ipaddr=(
+  /$'(<->(.<->(.<->(.<->|)|)|)|[:[:xdigit]]#:[:[:xdigit:]]#)(|/<->)\0'/
+  ':ipaddress:IP address (v4 or v6) with optional /<network-prefix-length>:( )'
 )
 
-# start a state machine. The state is modified by _arguments if the 
-# current argument (descriptors) cannot be completed. Each state has to define is successive state and the 
-# 'descriptors' for _arguments, which essentially tells _arguments how to complete
-_i=0
-while true;do
-  (( _i+=1 ))
-  #Guard for endless loops
-  [[ $_i -gt 100 ]] && return 1
-
-  descriptors=()
-  nextstate="end"
-  case $state in 
-  (start)
-    ##if line is empty (at the start) or ends with semicolon, autocomplete subcommands,
-    # else if we are after a space,complete a semicolon (end the current nft command) and start anew 
-    if [[ $line[1] = "" || $line[1] =~ ';$' ]] ; then
-      descriptors=( ":: :_nft_subcommands" )
-      nextstate="category"
-    else
-      if [[ $words =~ ' $' ]]; then
-        descriptors=(':: :(\;)')
-      else
-        descriptors=(':argument: ')
-      fi
-      nextstate="start"
-    fi
-  ;;
-  (category)
-    case $line[1] in
-    (add | list | flush | delete | create | rename | insert | replace | reset)
-      descriptors=( ":: :_nft_${line[1]}" )
-      nextstate=$line[1]
-    ;;
-    (monitor)
-      descriptors=( ":: : _nft_mon_filter"  )
-      nextstate="mon1"
-    ;;
-    (export)
-      descriptors=( ":: :(ruleset)" ":: :_nft_out_format" )
-      nextstate="preend"
-    ;;
-    (describe)
-      descriptors=( ":expression: ")
-      nextstate="start" #x restart
-    ;;
-    (*)
-      return 1;
-    ;;
-    esac
-
-    #descriptors=( "(ruleset)" )
-    #nextstate="end"
-  ;;
-  (mon1)
-    case $line[1] in
-    (new | destroy)
-#      descriptors=( ":: :_nft_mon_keywords"  ":: :_nft_out_format")
-      descriptors=( ":: : _nft_mon_keywords")
-      nextstate="mon1"
-    ;;
-    (tables | chains | sets | rules | elements | ruleset)
-      descriptors=( ":: : _nft_out_format")
-      nextstate="preend"
-    ;;
-    esac
-  ;;
-  #all completions for create and insert match with the completions of add
-  (create | insert) 
-    state="add"
-  ;|
-  #all completions for reset and flush match with the completions of list
-  (reset | flush)
-    state="list"
-  ;|
-  #(add(^table)/create(^table)/delete/flush(^ruleset)/insert/list(^ruleset)/rename/replace)[family]table
-  (reset | delete | insert | rename | replace | add | create | flush | list)
-    if [[ $state = "add" && $line[1] = "table" ]]; then
-      descriptors=( ":: :_nft_families" ":table name:")
-      nextstate="start" #x restart
-    elif [[ $state = "list" && ( $line[1] = "ruleset" || $line[1] = "tables" ) ]]; then
-      descriptors=( ":: :_nft_families")
-      nextstate="start" #x restart
-    elif [[ $state = "delete" && $line[1] = "table" ]]; then
-      descriptors=(": : _nft_table all-handle")
-      nextstate="tcomplete-delete-table"
-    else
-      cmd_obj=$line[1]
-      cmd_subcmd=$state
-      descriptors=(": : _nft_table all")
-      nextstate="tcomplete"
-    fi
-  ;;
-  (tcomplete-delete-table)
-    # if only a family was completed, complete the table name.
-    case $line[1] in
-    (arp | bridge | inet | ip | ip6 | netdev)
-      descriptors=(": : _nft_table ${line[1]}-handle")
-      cmd_fam=$line[1]
-    ;;
-    # else, complete nothing and go to the next state. default family is 'ip'
-    (*)
-      descriptors=()
-      cmd_fam="ip"
-    ;;
-    esac
-    nextstate="delete-table"
-  ;;
-  (tcomplete)
-    # if only a family was completed, complete the table name.
-    case $line[1] in
-    (arp | bridge | inet | ip | ip6 | netdev)
-      descriptors=(": : _nft_table ${line[1]}")
-      cmd_fam=$line[1]
-    ;;
-    # else, complete nothing and go to the next state. default family is 'ip'
-    (*)
-      descriptors=()
-      cmd_fam="ip"
-    ;;
-    esac
-    nextstate="$cmd_subcmd-$cmd_obj"
-  ;;
-  (list-table)
-    descriptors=(":: :(\;)")
-    nextstate="start"
-  ;;
-  (delete-table)
-    if [[ $line[1] == "handle" ]]; then
-      descriptors=(":table handle: _nft_table_handle $cmd_fam" )
-    else
-      descriptors=()
-    fi
-    nextstate="start"
-  ;;
-  (delete-chain | delete-set | delete-quota | delete-counter | delete-ct\\ helper)
-    cmd_tab=$line[1]
-    descriptors=(": : _nft_obj $cmd_fam $cmd_tab $cmd_obj true")
-    nextstate="delete-obj-handle"
-  ;;
-  (delete-obj-handle)
-    if [[ $line[1] == "handle" ]]; then
-      descriptors=(": : _nft_obj_handle $cmd_fam $cmd_tab $cmd_obj")
-    else
-      descriptors=(": :(\;)")
-    fi
-    nextstate="start"
-  ;;
-  (add-chain)
-    descriptors=(":chain name:")
-    nextstate="start"
-  ;;
-  (rename-chain)
-    cmd_tab=$line[1]
-    descriptors=(": : _nft_chain $cmd_fam $cmd_tab false")
-    nextstate="add-chain"
-  ;;
-  (replace-rule | delete-rule)
-    cmd_tab=$line[1]
-    descriptors=(": : _nft_chain $cmd_fam $cmd_tab false")
-    nextstate="repdel-rule"
-  ;;
-  (repdel-rule)
-    cmd_chain=$line[1]
-    descriptors=(": :(handle)" ": : _nft_rule_handle $cmd_fam $cmd_tab ${line[1]}")
-    if [[ $cmd_subcmd = "replace" ]];then
-      nextstate="rule-stmt"
-    else
-      nextstate="start"
-    fi
-  ;;
-  (add-rule)
-    cmd_tab=$line[1]
-    descriptors=(": : _nft_chain $cmd_fam $cmd_tab false")
-    nextstate="add-rule-2"
-  ;;
-  (add-rule-2)
-    cmd_chain=$line[1]
-    descriptors=(": :(handle index position)")
-    nextstate="add-rule-3"
-  ;;
-  (add-rule-3)
-    case $line[1] in
-    (index | position)
-      descriptors=(":${line[1]}:")
-    ;;
-    (handle)
-      descriptors=(": : _nft_rule_handle $cmd_fam $cmd_tab $cmd_chain")
-    ;;
-    (*)
-      descriptors=()
-    ;;
-    esac
-    nextstate="rule-stmt"
-  ;;
-  (rule-stmt)
-    #TODO
-    #    _nft_rule $cmd_fam $cmd_tab $cmd_chain\
-    #  && return 0;
-    descriptors=":expression: "
-    nextstate="start"
-  ;;
-  (list-set | list-map | delete-map | list-chain | list-flowtable | delete-flowtable | list-ct\\ helper | list-counter | list-quota | list-meter)
-    cmd_tab=$line[1]
-    descriptors=(": : _nft_obj $cmd_fam $cmd_tab $cmd_obj false")
-    nextstate="start"
-  ;;
-  #TODO:
-  #(add-element | delete-element)
-  #(add-set | add-map)
-  #(add-flowtable)
-  #("add-ct\ helper")
-  #(add-counter)
-  #(add-quota)
-
-  (*)
-    return 1;
-  ;;
-  esac
-  _arguments -C -s \
-    "${options[@]}" \
-    "${descriptors[@]}" \
-    "*:: :->$nextstate" \
-    && return 0;
-
-done
-} # end _nft
-
-_nft_subcommands(){
-  local commands=(
-	'add:add a table, chain, rule, set, map, or object'
-	'list:list a ruleset, table, chain, set, map, or object'
-	'flush:flush (delete everything from) a ruleset, table, chain, set, or map'
-	'export:print the ruleset in a machine readable format (json or xml)'
-	'delete:delete a table, chain, rule, set, element, map, or object'
-	'create:similar to add but returns an error for existing chain'
-	'rename:rename the specified chain'
-	'insert:similar to the add command, but the rule is prepended to the beginning of the chain or before the rule at the given position'
-	'replace:similar to the add command, but replaces the specified rule'
-	'reset:list-and-reset stateful object'
-	'monitor:listen to Netlink events'
-	'describe:show information about the type of an expression and its data type'
-  )
-  _describe -t commands 'nft subcommands' commands "${expl[@]}"
-}
-_nft_mon_filter(){
-  local filter=(
-    'new:show only events of created objects'
-    'destroy:show only events of deleted objects'
-  )
-  _describe -t filter 'nft monitor' filter -J "action filter" "${expl[@]}"
-  _nft_mon_keywords
+_nftf_ct_value(){
+  local -a values=( new established related invalid )
+  _describe 'state' values -M 'm:{[:lower:]}={[:upper:]}'
 }
 
-_nft_mon_keywords(){
-  local objs=(
-    'tables:show table events'
-    'chains:show chain events'
-    'sets:show set events'
-    'rules:show rule events'
-    'elements:show only events of element objects'
-    'ruleset:show ruleset events, such as table, chain, rule, set, counters  and  quotas'
-  )
-  _describe -t objs 'nft monitor' objs -J "object filter" "${expl[@]}"
-  _nft_out_format
-}
+local -a subcmd_ipport
+_regex_words ip-port "ip port" \
+  'dport:TCP protocol:$subcmd_number' \
+  'sport:UDP protocol:$subcmd_number'
+subcmd_ipport=("$reply[@]")
 
-_nft_out_format(){
-  local commands=(
-    'json:format output to JSON'
-    'xml:format output to XML'
-  )
-    _describe -t commands "output format" commands -J "output format options" "${expl[@]}"
-}
+local -a subcmd_ipprotocol
+_regex_words ip-protocol "ip protocol" \
+  'tcp:TCP protocol:$subcmd_ipport' \
+  'udp:UDP protocol:$subcmd_ipport' \
+  'icmp:ICMP protocol'
+subcmd_ipprotocol=("$reply[@]")
 
-_nft_add(){
-  local commands=(
-    'table:add a new table'
-    'flowtable:add a new flowtable'
-    'chain:add a chain to a table'
-    'rule:add a rule to an existing chain'
-    'set:add a set to a table'
-    'map:add a map to a table'
-    'element:add one or multiple element(s) to a set or map'
-    'ct\ helper:add a ct helper to a table'
-    'counter:add a named counter to a table'
-    'quota:add a named quota helper to a table'
-  )
-  _describe -t commands 'nft add' commands "$@"
-}
+subcmd_ct_state=( /$'[^\0]#\0'/ ':ct:ct state:_nftf_ct_value')
 
-_nft_create(){
-  local commands=(
-    "table:add a table, but return an error if it already exists"
-    "chain:add a chain to a table, but return an error if it already exists"
-    "flowtable:add a flowtable, but return an error if it already exists"
-  )
-  _describe -t commands 'nft create' commands "$@"
-}
+local -a subcmd_dev net_intf_disp net_intf_list
+subcmd_dev=(/"(${(j.|.)net_intf_list})"$'\0'/
+	    ':interfaces:network interface:_net_interfaces')
 
-_nft_delete(){
-  local commands=(
-    "table:delete the specified table"
-    "chain:delete the specified chain, chain must be empty and mustn't be used as jump target"
-    "rule:delete the specified rule, rule must be referrable to by a handle"
-    "set:delete the specified set"
-    "map:delete the specified map"
-    "element:delete element(s) from the specified set/map"
-    "flowtable:delete the specified flowtable"
-    "ct\ helper:delete the specified ct helper"
-    "counter:delete the specified counter"
-    "quota:delete the specified quota"
-  )
-  _describe -t commands 'nft delete' commands "$@"
-}
+local -a subcmd_meta_interfaces
+_regex_words nft-meta "nfttable meta interface" \
+  'oif:output interface INDEX:$subcmd_dev' \
+  'iif:input interface INDEX:$subcmd_dev' \
+  'oifname:output interface NAME:$subcmd_dev' \
+  'iifname:input interface NAME:$subcmd_dev'
+subcmd_meta_interfaces=("$reply[@]")
 
-_nft_flush(){
-  local commands=(
-    "ruleset:clear the whole ruleset, including removing all tables and containing objects"
-    "table:flush all chains and rules of the specified table"
-    "chain:flush all rules of the specified chain"
-    "set:remove all elements from the specified set"
-    "map:remove all elements from the specified map"
-  )
-  _describe -t commands 'nft flush' commands "$@"
-}
+local -a subcmd_action
+_regex_words nft-subcmd "nfttable action"\
+  'accept:accept traffic' \
+  'drop:drop traffic' \
+  'reject:reject traffic' \
+  'log:logging traffic'
+subcmd_action=("$reply[@]")
 
-_nft_insert(){
-  local commands=(
-    "rule:prepend a rule to the beginning of the chain or before the rule with the given handle"
-  )
-  _describe -t commands 'nft insert' commands "$@"
-}
+local -a nft_subcommands
+nft_subcommands=("(" $subcmd_meta_interfaces "|" "#" ")" $subcmd_action)
 
-_nft_list(){
-  local commands=(
-    "ruleset:print the ruleset in human-readable format"
-    "tables:list all tables (undocumented)"
-    "table:list all chains and rules of the specified table"
-    "chain:list all rules of the specified chain"
-    "set:display the elements in the specified set"
-    "map:display the elements in the specified map"
-    "flowtable:list all flowtables"
-    "ct\ helper:display stateful information the ct helper holds"
-    "counter:display stateful information the counter holds"
-    "quota:display stateful information the quota holds"
-  )
-  _describe -t commands 'nft list' commands "$@"
-}
+local -a subcmd_default_chain
+_regex_words default-chain "iptable chain" \
+  'input:input chain:$nft_subcommands' \
+  'output:output chain' \
+  'forward:forward chain' 
+subcmd_default_chain=("$reply[@]")
 
-_nft_rename(){
-  local commands=(
-    "chain:replace a chain"
-  )
-  _describe -t commands 'nft rename' commands "$@"
-}
+local -a subcmd_default_table
+_regex_words default-table "iptable table" \
+  'filter:filter tables:$subcmd_default_chain' \
+  'mangle:mangle tables:$subcmd_default_chain' \
+  'nat:nat tables:$subcmd_default_chain'
+subcmd_default_table=("$reply[@]")
 
-_nft_replace(){
-  local commands=(
-    "rule:replace a rule"
-  )
-  _describe -t commands 'nft replace' commands "$@"
-}
+#local -a subcmd_output
+#subcmd_output=(/$'[^\0]##\0'/ '-j')
+local -a subcmd_family
+_regex_words nft-family "nfttable family" \
+  'ip:IPv4 family:$subcmd_default_table' \
+  'ip6:IPv6 family:$subcmd_string' \
+  'inet:IPv4 and IPv6:$subcmd_default_table' \
+  'arp:ARP address:$subcmd_string' \
+  'bridge:bridge addres:$subcmd_string'
+subcmd_family=("$reply[@]")
 
-_nft_reset(){
-  local commands=(
-    'ct\ helper:reset and list a ct helper to a table'
-    'counter:reset and list a counter from a table'
-    'quota:reset and list a quota object a table'
-  )
-  _describe -t commands 'nft reset' commands "$@"
-}
-_nft_families(){
-  local commands=(
-    "ip:IPv4 address family"
-    "ip6:IPv6 address family"
-    "inet:internet (IPv4+IPv6) address family"
-    "arp:ARP address family, handling IPv4 ARP packets"
-    "bridge:Bridge address family, handling packets which traverse a bridge device"
-    "netdev:Netdev address family, handling packets from ingress"
-  )
-  _describe -t commands 'nft families' commands "$@"
-}
+local -a create_cmds
+_regex_words create-commands "create commands" \
+  'chain:create a chain of table' \
+  'flowtable:create a flowtable' \
+  'table:create a table'
+create_cmds=("$reply[@]")
 
-_nft_table(){
-  #$1 can be: all all-handle <family> <family>-handle
-  local tables=()
-  if [[ "$1" =~ "^all" ]]; then
-    tables+=( ${(f)"$(_call_program -p nft-tables nft list tables 2>/dev/null \
-        | cut -d\  -f2 |sort|uniq -u )"} )
-    1="${1/all/ip}"
-  fi
-  if [[ "$1" =~ "-handle$" ]]; then
-    tables+=("handle")
-    #remove -handle from $1 to be able to complete table names
-    1="${1/-handle/}"
-  fi
-  case $1 in 
-  (arp | bridge | inet | ip | ip6 | netdev)
-    tables+=( ${(f)"$(_call_program -p nft-tables nft list tables $1 2>/dev/null \
-        | cut -d\  -f3 )"} )
-  ;;
-  esac
-  _describe -V -t tables tables tables "${expl[@]}"
-}
+local -a flush_cmds
+_regex_words flush-commands "flush commands" \
+  'chain:flush all rules of the specified chain' \
+  'map:remove all elements from the specified map' \
+  'rule:clear the whole ruleset, including removing all tables and containing objects' \
+  'rule:flush all chains and rules of the specified table' \
+  'set:remove all elements from the specified set'
+flush_cmds=("$reply[@]")
 
-_nft_table_handle(){
-  local tables=( ${(f)"$(_call_program -p nft-table-handles nft list ruleset -a 2>/dev/null \
-      | grep '^table' | sed 's/table // ;s/{ # handle // ;s/\(\S*\) \(\S*\) \(\S*\)/\3:\2(type \1)/' )"} )
-  _describe -t tables tables tables "${expl[@]}"
-}
+local -a options_cmds
+_regex_words options-commands "options command" \
+  'chain:specify chain' \
+  'table:specify table' \
+  'rule:specify rules' \
+  'ct:specify ct' \
+  'element:specify element' \
+  'map:specify map' \
+  'counter:specify counter' \
+  'flowtable:specify flowtable' \
+  'quota:specify quota' \
+  'set:specify set'
+options_cmds=("$reply[@]")
 
-_nft_obj(){
-  #$1:protocol family
-  #$2:table
-  #$3:obj type (chain/set/map/flowtable/ct helper/counter/quota/meter)
-  #$4:include 'handle'?
-  local objs=( ${(f)"$(_call_program -p nft-$3s nft list table $1 $2 -a 2>/dev/null\
-      | grep ""\\s\*$3"" | sed 's/\s*'"$3"' // ;s/ { # \(.*\)/:(\1)/' )"} )
-  if $4 ;then
-    objs+=( "handle:adress chain by handle")
-  fi
-  _describe -J -t objs objs objs "${expl[@]}"
-}
+#
+# Global argument handling
+#
+local -a args reply command
+args=(
+    # Command word.  Don't care what that is.
+    /$'[^\0]#\0'/
+)
 
-_nft_obj_handle(){
-  #$1:protocol family
-  #$2:table
-  #$3:obj type (chain/set/ct helper/counter/quota)
-  local handles=( ${(f)"$(_call_program -p nft-$3-handles nft list table $1 $2 -a 2>/dev/null\
-      | grep ""\\s\*$3"" | sed 's/\s*'"$3"' // ;s/ { # handle// ;s/\(\S*\) \(\S*\)/\2:\1/' )"} )
-  _describe -t handles handles handles "${expl[@]}"
-}
+_regex_words options "nft options" \
+  '-h:show help' \
+  '--help:show help' \
+  '-v:print version information' \
+  '--version:print version information' \
+  '-f:read input from \<filename\>:$subcmd_files' \
+  '--file:read input from \<filename\>:$subcmd_files' \
+  '-j:format output in json:$subcmd_number' \
+  '--json:format output in json:$subcmd_number' \
+  '-e:echo what hae been added, inserted or replaced' \
+  '--echo:echo what hae been added, inserted or replaced' \
+  '-N:translate IP adddresses to names' \
+  '--reversends:translate IP adddresses to names' \
+  '-a:output rule handle' \
+  '--handle:output rule handle' \
+  '-V:show extended version information:( )' \
+  '-u:print UID/GID as defined in /etc/passwd and /etc/group' \
+  '--guid:print UID/GID as defined in /etc/passwd and /etc/group'
+args+=("$reply[@]" "#")
 
-_nft_rule_handle(){
-  #$1:protocol family
-  #$2:table
-  #$3:chain name
-  local rules=( ${(f)"$(_call_program -p nft-rule-handles nft list chain $1 $2 $3 -a 2>/dev/null \
-      |grep -v '^\s*\(table\|chain\|type\|\}\)'|sed 's/^\s*\(.*\) # handle \(\S*\)$/\2:\1/' )"} )
-  _describe -t rules rules rules "${expl[@]}"
-}
+_regex_words commands "nft command" \
+  'add:add a table, chain, rule, set, map, or object:$options_cmds' \
+  'describe:show information about the type of an expression and its data type' \
+  'list:list a ruleset, table, chain, set, map, or object:$options_cmds' \
+  'flush:flush (delete everything from) a ruleset, table, chain, set, or map:$flush_cmds' \
+  'delete:delete a table, chain, rule, set, element, map, or object:$options_cmds' \
+  'create:similar to add but returns an error for existing chain:$create_cmds' \
+  'rename:rename the specified chain' \
+  'insert:similar to the add command, but the rule is prepended to the beginning of the chain or before the rule at the given position' \
+  'replace:similar to the add command, but replaces the specified rule:$options_cmds' \
+  'reset:list-and-reset stateful object' \
+  'monitor:listen to Netlink events'
+args+=("$reply[@]")
 
+
+_regex_arguments _nft "${args[@]}"
 
 _nft "$@"
